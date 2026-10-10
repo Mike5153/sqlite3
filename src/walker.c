@@ -135,6 +135,7 @@ int sqlite3WalkSelectExpr(Walker *pWalker, Select *p){
   if( sqlite3WalkExpr(pWalker, p->pWhere) ) return WRC_Abort;
   if( sqlite3WalkExprList(pWalker, p->pGroupBy) ) return WRC_Abort;
   if( sqlite3WalkExpr(pWalker, p->pHaving) ) return WRC_Abort;
+  if( sqlite3WalkExpr(pWalker, p->pQualify) ) return WRC_Abort;
   if( sqlite3WalkExprList(pWalker, p->pOrderBy) ) return WRC_Abort;
   if( sqlite3WalkExpr(pWalker, p->pLimit) ) return WRC_Abort;
 #if !defined(SQLITE_OMIT_WINDOWFUNC)

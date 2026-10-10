@@ -983,6 +983,7 @@ static Bitmask exprSelectUsage(WhereMaskSet *pMaskSet, Select *pS){
     mask |= sqlite3WhereExprListUsage(pMaskSet, pS->pOrderBy);
     mask |= sqlite3WhereExprUsage(pMaskSet, pS->pWhere);
     mask |= sqlite3WhereExprUsage(pMaskSet, pS->pHaving);
+    mask |= sqlite3WhereExprUsage(pMaskSet, pS->pQualify);
     if( ALWAYS(pSrc!=0) ){
       int i;
       for(i=0; i<pSrc->nSrc; i++){

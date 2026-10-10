@@ -299,6 +299,7 @@ void sqlite3TreeViewSelect(TreeView *pView, const Select *p, u8 moreToFollow){
       if( p->pWhere ) n++;
       if( p->pGroupBy ) n++;
       if( p->pHaving ) n++;
+      if( p->pQualify ) n++;
       if( p->pOrderBy ) n++;
       if( p->pLimit ) n++;
 #ifndef SQLITE_OMIT_WINDOWFUNC
@@ -350,6 +351,11 @@ void sqlite3TreeViewSelect(TreeView *pView, const Select *p, u8 moreToFollow){
       sqlite3TreeViewPop(&pView);
     }
 #endif
+    if( p->pQualify ){
+      sqlite3TreeViewItem(pView, "QUALIFY", (n--)>0);
+      sqlite3TreeViewExpr(pView, p->pQualify, 0);
+      sqlite3TreeViewPop(&pView);
+    }
     if( p->pOrderBy ){
       sqlite3TreeViewExprList(pView, p->pOrderBy, (n--)>0, "ORDERBY");
     }

@@ -3373,6 +3373,7 @@ struct SrcItem {
     unsigned fixedSchema :1;   /* Uses u4.pSchema, not u4.zDatabase */
     unsigned hadSchema :1;     /* Had u4.zDatabase before u4.pSchema */
     unsigned fromExists :1;    /* Comes from WHERE EXISTS(...) */
+    unsigned isDt :1;          /* True if DT keyword precedes table name */
   } fg;
   int iCursor;      /* The VDBE cursor number used to access this table */
   Bitmask colUsed;  /* Bit N set if column N used. Details above for N>62 */
@@ -3609,6 +3610,7 @@ struct Select {
   Expr *pWhere;          /* The WHERE clause */
   ExprList *pGroupBy;    /* The GROUP BY clause */
   Expr *pHaving;         /* The HAVING clause */
+  Expr *pQualify;        /* The QUALIFY clause. Or NULL. */
   ExprList *pOrderBy;    /* The ORDER BY clause */
   Select *pPrior;        /* Prior select in a compound select statement */
   Select *pNext;         /* Next select to the left in a compound */
@@ -4614,6 +4616,7 @@ int sqlite3WindowCompare(const Parse*, const Window*, const Window*, int);
 void sqlite3WindowCodeInit(Parse*, Select*);
 void sqlite3WindowCodeStep(Parse*, Select*, WhereInfo*, int, int);
 int sqlite3WindowRewrite(Parse*, Select*);
+void sqlite3WindowRewriteExpr(Parse*, Window*, SrcList*, Expr*, Table*, ExprList**);
 void sqlite3WindowUpdate(Parse*, Window*, Window*, FuncDef*);
 Window *sqlite3WindowDup(sqlite3 *db, Expr *pOwner, Window *p);
 Window *sqlite3WindowListDup(sqlite3 *db, Window *p);

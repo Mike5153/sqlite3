@@ -70,7 +70,8 @@ static void resolveAlias(
   ExprList *pEList,      /* A result set */
   int iCol,              /* A column in the result set.  0..pEList->nExpr-1 */
   Expr *pExpr,           /* Transform this into an alias to the result set */
-  int nSubquery          /* Number of subqueries that the label is moving */
+  int nSubquery,         /* Number of subqueries that the label is moving */
+  Select *pSelect        /* SELECT owning window functions */
 ){
   Expr *pOrig;           /* The iCol-th column of the result set */
   Expr *pDup;            /* Copy of pOrig */
@@ -99,6 +100,11 @@ static void resolveAlias(
     if( ExprHasProperty(pExpr, EP_WinFunc) ){
       if( ALWAYS(pExpr->y.pWin!=0) ){
         pExpr->y.pWin->pOwner = pExpr;
+#ifndef SQLITE_OMIT_WINDOWFUNC
+        if( pSelect ){
+          sqlite3WindowLink(pSelect, pExpr->y.pWin);
+        }
+#endif
       }
     }
     sqlite3ExprDeferredDelete(pParse, pDup);
@@ -682,7 +688,7 @@ static int lookupName(
             sqlite3ErrorMsg(pParse, "row value misused");
             return WRC_Abort;
           }
-          resolveAlias(pParse, pEList, j, pExpr, nSubquery);
+          resolveAlias(pParse, pEList, j, pExpr, nSubquery, pNC ? pNC->pWinSelect : 0);
           cnt = 1;
           pMatch = 0;
           assert( zTab==0 && zDb==0 );
@@ -1720,7 +1726,7 @@ int sqlite3ResolveOrderGroupBy(
         resolveOutOfRangeError(pParse, zType, i+1, pEList->nExpr, 0);
         return 1;
       }
-      resolveAlias(pParse, pEList, pItem->u.x.iOrderByCol-1, pItem->pExpr,0);
+      resolveAlias(pParse, pEList, pItem->u.x.iOrderByCol-1, pItem->pExpr, 0, pSelect);
     }
   }
   return 0;
@@ -1832,6 +1838,230 @@ static int resolveOrderGroupBy(
     }
   }
   return sqlite3ResolveOrderGroupBy(pParse, pSelect, pOrderBy, zType);
+}
+
+#include <time.h>
+
+/*
+** Determine if a column is a timestamp/datetime column.
+*/
+static int sqlite3IsTimestampColumn(Column *pCol){
+  const char *zName;
+  int n;
+  if( pCol==0 ) return 0;
+  zName = pCol->zCnName;
+  if( zName==0 ) return 0;
+  n = sqlite3Strlen30(zName);
+  if( (n >= 5 && sqlite3StrNICmp(zName + n - 5, "_time", 5) == 0) ||
+      (n >= 3 && sqlite3StrNICmp(zName + n - 3, "_at", 3) == 0) ||
+      (n >= 9 && sqlite3StrNICmp(zName + n - 9, "timestamp", 9) == 0) ||
+      (n >= 5 && sqlite3StrNICmp(zName + n - 5, "_date", 5) == 0) ||
+      (sqlite3StrICmp(zName, "time") == 0) ||
+      (sqlite3StrICmp(zName, "ts") == 0) ){
+    return 1;
+  }
+  return 0;
+}
+
+/*
+** Parse date string to epoch milliseconds.
+*/
+static sqlite3_int64 sqlite3DateStringToEpochMillis(const char *z, int isEnd){
+  int Y = 0, M = 0, D = 0;
+  int h = 0, m = 0, s = 0, ms = 0;
+  struct tm tms;
+  time_t t;
+  int n;
+  const char *pTime;
+
+  if( z==0 ) return -1;
+  while( sqlite3Isspace(*z) || *z=='\'' || *z=='\"' ) z++;
+
+  n = sscanf(z, "%4d-%2d-%2d", &Y, &M, &D);
+  if( n != 3 ) return -1;
+  if( Y < 1970 || M < 1 || M > 12 || D < 1 || D > 31 ) return -1;
+
+  pTime = z + 10;
+  if( *pTime == ' ' || *pTime == 'T' || *pTime == 't' ){
+    pTime++;
+    n = sscanf(pTime, "%2d:%2d:%2d", &h, &m, &s);
+    if( n >= 2 ){
+      const char *pDot = pTime + 5;
+      if( n == 3 && *pDot == ':' ) pDot += 3;
+      if( *pDot == '.' ){
+        sscanf(pDot + 1, "%3d", &ms);
+      }
+    }
+  } else if( isEnd ){
+    h = 23; m = 59; s = 59; ms = 999;
+  }
+
+  memset(&tms, 0, sizeof(tms));
+  tms.tm_year = Y - 1900;
+  tms.tm_mon = M - 1;
+  tms.tm_mday = D;
+  tms.tm_hour = h;
+  tms.tm_min = m;
+  tms.tm_sec = s;
+  tms.tm_isdst = -1;
+
+  t = mktime(&tms);
+  if( t == (time_t)-1 ) return -1;
+
+  return ((sqlite3_int64)t) * 1000 + ms;
+}
+
+/*
+** Wrap an expression with datetime(expr / 1000, 'unixepoch', 'localtime')
+*/
+static Expr *sqlite3WrapColumnWithDatetime(Parse *pParse, Expr *pColExpr){
+  sqlite3 *db = pParse->db;
+  Token t;
+  Token tUnix;
+  Token tLocal;
+  Expr *p1000;
+  Expr *pDiv;
+  Expr *pArg1;
+  Expr *pArg2;
+  ExprList *pArgs;
+
+  p1000 = sqlite3ExprAlloc(db, TK_INTEGER, 0, 0);
+  if( !p1000 ) return pColExpr;
+  p1000->u.iValue = 1000;
+  p1000->flags |= EP_IntValue;
+
+  pDiv = sqlite3PExpr(pParse, TK_SLASH, pColExpr, p1000);
+
+  tUnix.z = "unixepoch";
+  tUnix.n = 9;
+  pArg1 = sqlite3ExprAlloc(db, TK_STRING, &tUnix, 1);
+
+  tLocal.z = "localtime";
+  tLocal.n = 9;
+  pArg2 = sqlite3ExprAlloc(db, TK_STRING, &tLocal, 1);
+
+  pArgs = sqlite3ExprListAppend(pParse, 0, pDiv);
+  pArgs = sqlite3ExprListAppend(pParse, pArgs, pArg1);
+  pArgs = sqlite3ExprListAppend(pParse, pArgs, pArg2);
+
+  t.z = "datetime";
+  t.n = 8;
+  return sqlite3ExprFunction(pParse, pArgs, &t, 0);
+}
+
+/*
+** Check if a column expression belongs to a table with the isDt flag set.
+*/
+static int isColFromDtTable(SrcList *pSrc, Expr *pColExpr){
+  if( pColExpr && pColExpr->op == TK_COLUMN && pSrc ){
+    Table *pTab = pColExpr->y.pTab;
+    int iCol = pColExpr->iColumn;
+    if( pTab && iCol >= 0 && iCol < pTab->nCol && sqlite3IsTimestampColumn(&pTab->aCol[iCol]) ){
+      int j;
+      for(j=0; j<pSrc->nSrc; j++){
+        if( pSrc->a[j].fg.isDt && (pSrc->a[j].pSTab == pTab || pSrc->a[j].iCursor == pColExpr->iTable) ){
+          return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+/*
+** Convert string expression to 64-bit integer timestamp expression.
+*/
+static Expr *convertExprToMillis(Parse *pParse, Expr *pExpr, int isEnd){
+  if( pExpr && pExpr->op == TK_STRING && pExpr->u.zToken ){
+    sqlite3_int64 ms = sqlite3DateStringToEpochMillis(pExpr->u.zToken, isEnd);
+    if( ms >= 0 ){
+      char zBuf[32];
+      sqlite3_snprintf(sizeof(zBuf), zBuf, "%lld", ms);
+      Expr *pNew = sqlite3Expr(pParse->db, TK_INTEGER, zBuf);
+      if( pNew ){
+        sqlite3ExprDelete(pParse->db, pExpr);
+        return pNew;
+      }
+    }
+  }
+  return pExpr;
+}
+
+/*
+** Recursively transform WHERE expressions for DT tables.
+*/
+static void applyDtToWhereExpr(Parse *pParse, SrcList *pSrc, Expr *pExpr){
+  if( pExpr==0 ) return;
+
+  applyDtToWhereExpr(pParse, pSrc, pExpr->pLeft);
+  applyDtToWhereExpr(pParse, pSrc, pExpr->pRight);
+
+  if( (pExpr->op>=TK_EQ && pExpr->op<=TK_GE) || pExpr->op==TK_NE || pExpr->op==TK_IS ){
+    if( isColFromDtTable(pSrc, pExpr->pLeft) && pExpr->pRight && pExpr->pRight->op == TK_STRING ){
+      int isEnd = (pExpr->op == TK_LE || pExpr->op == TK_LT);
+      pExpr->pRight = convertExprToMillis(pParse, pExpr->pRight, isEnd);
+    } else if( isColFromDtTable(pSrc, pExpr->pRight) && pExpr->pLeft && pExpr->pLeft->op == TK_STRING ){
+      int isEnd = (pExpr->op == TK_GE || pExpr->op == TK_GT);
+      pExpr->pLeft = convertExprToMillis(pParse, pExpr->pLeft, isEnd);
+    }
+  } else if( pExpr->op == TK_BETWEEN ){
+    if( isColFromDtTable(pSrc, pExpr->pLeft) && ExprUseXList(pExpr) && pExpr->x.pList ){
+      ExprList *pList = pExpr->x.pList;
+      if( pList->nExpr >= 2 ){
+        pList->a[0].pExpr = convertExprToMillis(pParse, pList->a[0].pExpr, 0);
+        pList->a[1].pExpr = convertExprToMillis(pParse, pList->a[1].pExpr, 1);
+      }
+    }
+  } else if( pExpr->op == TK_IN ){
+    if( isColFromDtTable(pSrc, pExpr->pLeft) && ExprUseXList(pExpr) && pExpr->x.pList ){
+      ExprList *pList = pExpr->x.pList;
+      int k;
+      for(k=0; k<pList->nExpr; k++){
+        pList->a[k].pExpr = convertExprToMillis(pParse, pList->a[k].pExpr, 0);
+      }
+    }
+  }
+}
+
+/*
+** Apply DT transformations to SELECT results and WHERE clause.
+*/
+static void sqlite3ApplyDtTransform(Parse *pParse, NameContext *pNC, Select *p){
+  int i;
+  SrcList *pSrc = p->pSrc;
+  int hasDt = 0;
+  if( pSrc==0 ) return;
+  for(i=0; i<pSrc->nSrc; i++){
+    if( pSrc->a[i].fg.isDt ){
+      hasDt = 1;
+      break;
+    }
+  }
+  if( !hasDt ) return;
+
+  /* 1. Transform WHERE clause */
+  if( p->pWhere ){
+    applyDtToWhereExpr(pParse, pSrc, p->pWhere);
+  }
+
+  /* 2. Transform SELECT result columns */
+  if( p->pEList ){
+    for(i=0; i<p->pEList->nExpr; i++){
+      Expr *pExpr = p->pEList->a[i].pExpr;
+      if( isColFromDtTable(pSrc, pExpr) ){
+        Table *pTab = pExpr->y.pTab;
+        int iCol = pExpr->iColumn;
+        if( p->pEList->a[i].zEName == 0 && pTab && iCol >= 0 && iCol < pTab->nCol ){
+          p->pEList->a[i].zEName = sqlite3DbStrDup(pParse->db, pTab->aCol[iCol].zCnName);
+          p->pEList->a[i].fg.eEName = ENAME_NAME;
+        }
+        p->pEList->a[i].pExpr = sqlite3WrapColumnWithDatetime(pParse, pExpr);
+        if( pNC ){
+          sqlite3ResolveExprNames(pNC, p->pEList->a[i].pExpr);
+        }
+      }
+    }
+  }
 }
 
 /*
@@ -1986,6 +2216,23 @@ static int resolveSelectStep(Walker *pWalker, Select *p){
     sNC.ncFlags |= NC_Where;
     if( sqlite3ResolveExprNames(&sNC, p->pWhere) ) return WRC_Abort;
     sNC.ncFlags &= ~NC_Where;
+
+#ifndef SQLITE_OMIT_WINDOWFUNC
+    if( p->pQualify ){
+      sNC.ncFlags |= NC_UEList | NC_AllowAgg | NC_AllowWin;
+      sNC.uNC.pEList = p->pEList;
+      sNC.pWinSelect = p;
+      if( sqlite3ResolveExprNames(&sNC, p->pQualify) ) return WRC_Abort;
+      sNC.ncFlags &= ~NC_AllowWin;
+      if( p->pWin==0 ){
+        sqlite3ErrorMsg(pParse, "QUALIFY clause requires at least one window function");
+        return WRC_Abort;
+      }
+    }
+#endif
+
+    /* Apply DT transformation for tables with DT flag */
+    sqlite3ApplyDtTransform(pParse, &sNC, p);
 
     /* Resolve names in table-valued-function arguments */
     for(i=0; i<p->pSrc->nSrc; i++){

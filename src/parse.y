@@ -269,7 +269,7 @@ columnname(A) ::= nm(A) typetoken(Y). {sqlite3AddColumn(pParse,A,Y);}
 //
 %fallback ID
   ABORT ACTION AFTER ANALYZE ASC ATTACH BEFORE BEGIN BY CASCADE CAST COLUMNKW
-  CONFLICT DATABASE DEFERRED DESC DETACH DO
+  CONFLICT DATABASE DEFERRED DESC DETACH DO DT
   EACH END EXCLUSIVE EXPLAIN FAIL FOR
   IGNORE IMMEDIATE INITIALLY INSTEAD LIKE_KW MATCH NO PLAN
   QUERY KEY OF OFFSET PRAGMA RAISE RECURSIVE RELEASE REPLACE RESTRICT ROW ROWS
@@ -632,19 +632,26 @@ multiselect_op(A) ::= EXCEPT|INTERSECT(OP).  {A = @OP; /*A-overwrites-OP*/}
 %endif SQLITE_OMIT_COMPOUND_SELECT
 
 oneselect(A) ::= SELECT distinct(D) selcollist(W) from(X) where_opt(Y)
-                 groupby_opt(P) having_opt(Q) 
+                 groupby_opt(P) having_opt(Q) qualify_opt(QL)
                  orderby_opt(Z) limit_opt(L). {
   A = sqlite3SelectNew(pParse,W,X,Y,P,Q,Z,D,L);
+  if( A ){
+    A->pQualify = QL;
+  }else{
+    sqlite3ExprDelete(pParse->db, QL);
+  }
 }
 %ifndef SQLITE_OMIT_WINDOWFUNC
 oneselect(A) ::= SELECT distinct(D) selcollist(W) from(X) where_opt(Y)
-                 groupby_opt(P) having_opt(Q) window_clause(R)
+                 groupby_opt(P) having_opt(Q) window_clause(R) qualify_opt(QL)
                  orderby_opt(Z) limit_opt(L). {
   A = sqlite3SelectNew(pParse,W,X,Y,P,Q,Z,D,L);
   if( A ){
     A->pWinDefn = R;
+    A->pQualify = QL;
   }else{
     sqlite3WindowListDelete(pParse->db, R);
+    sqlite3ExprDelete(pParse->db, QL);
   }
 }
 %endif
@@ -745,8 +752,17 @@ stl_prefix(A) ::= .                           {A = 0;}
 seltablist(A) ::= stl_prefix(A) nm(Y) dbnm(D) as(Z) on_using(N). {
   A = sqlite3SrcListAppendFromTerm(pParse,A,&Y,&D,&Z,0,&N);
 }
+seltablist(A) ::= stl_prefix(A) DT nm(Y) dbnm(D) as(Z) on_using(N). {
+  A = sqlite3SrcListAppendFromTerm(pParse,A,&Y,&D,&Z,0,&N);
+  if( A ) A->a[A->nSrc-1].fg.isDt = 1;
+}
 seltablist(A) ::= stl_prefix(A) nm(Y) dbnm(D) as(Z) indexed_by(I) on_using(N). {
   A = sqlite3SrcListAppendFromTerm(pParse,A,&Y,&D,&Z,0,&N);
+  sqlite3SrcListIndexedBy(pParse, A, &I);
+}
+seltablist(A) ::= stl_prefix(A) DT nm(Y) dbnm(D) as(Z) indexed_by(I) on_using(N). {
+  A = sqlite3SrcListAppendFromTerm(pParse,A,&Y,&D,&Z,0,&N);
+  if( A ) A->a[A->nSrc-1].fg.isDt = 1;
   sqlite3SrcListIndexedBy(pParse, A, &I);
 }
 seltablist(A) ::= stl_prefix(A) nm(Y) dbnm(D) LP exprlist(E) RP as(Z) on_using(N). {
@@ -919,6 +935,11 @@ groupby_opt(A) ::= GROUP BY nexprlist(X). {A = X;}
 %destructor having_opt {sqlite3ExprDelete(pParse->db, $$);}
 having_opt(A) ::= .                {A = 0;}
 having_opt(A) ::= HAVING expr(X).  {A = X;}
+
+%type qualify_opt {Expr*}
+%destructor qualify_opt {sqlite3ExprDelete(pParse->db, $$);}
+qualify_opt(A) ::= .                {A = 0;}
+qualify_opt(A) ::= QUALIFY expr(X). {A = X;}
 
 %type limit_opt {Expr*}
 

@@ -886,6 +886,41 @@ static void selectWindowRewriteEList(
 }
 
 /*
+** Rewrite expressions in expression pExpr that belong to the SELECT
+** statement being rewritten.
+*/
+void sqlite3WindowRewriteExpr(
+  Parse *pParse,
+  Window *pWin,
+  SrcList *pSrc,
+  Expr *pExpr,                    /* Rewrite this expression */
+  Table *pTab,
+  ExprList **ppSub                /* IN/OUT: Sub-select expression-list */
+){
+  Walker sWalker;
+  WindowRewrite sRewrite;
+
+  if( pExpr==0 ) return;
+  assert( pWin!=0 );
+  memset(&sWalker, 0, sizeof(Walker));
+  memset(&sRewrite, 0, sizeof(WindowRewrite));
+
+  sRewrite.pSub = *ppSub;
+  sRewrite.pWin = pWin;
+  sRewrite.pSrc = pSrc;
+  sRewrite.pTab = pTab;
+
+  sWalker.pParse = pParse;
+  sWalker.xExprCallback = selectWindowRewriteExprCb;
+  sWalker.xSelectCallback = selectWindowRewriteSelectCb;
+  sWalker.u.pRewrite = &sRewrite;
+
+  (void)sqlite3WalkExpr(&sWalker, pExpr);
+
+  *ppSub = sRewrite.pSub;
+}
+
+/*
 ** Append a copy of each expression in expression-list pAppend to
 ** expression list pList. Return a pointer to the result list.
 */
@@ -1021,6 +1056,9 @@ int sqlite3WindowRewrite(Parse *pParse, Select *p){
 
     selectWindowRewriteEList(pParse, pMWin, pSrc, p->pEList, pTab, &pSublist);
     selectWindowRewriteEList(pParse, pMWin, pSrc, p->pOrderBy, pTab, &pSublist);
+    if( p->pQualify ){
+      sqlite3WindowRewriteExpr(pParse, pMWin, pSrc, p->pQualify, pTab, &pSublist);
+    }
     pMWin->nBufferCol = (pSublist ? pSublist->nExpr : 0);
 
     /* Append the PARTITION BY and ORDER BY expressions to the to the

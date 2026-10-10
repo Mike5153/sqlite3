@@ -88,6 +88,7 @@ static void clearSelect(sqlite3 *db, Select *p, int bFree){
     sqlite3ExprDelete(db, p->pWhere);
     sqlite3ExprListDelete(db, p->pGroupBy);
     sqlite3ExprDelete(db, p->pHaving);
+    sqlite3ExprDelete(db, p->pQualify);
     sqlite3ExprListDelete(db, p->pOrderBy);
     sqlite3ExprDelete(db, p->pLimit);
     if( OK_IF_ALWAYS_TRUE(p->pWith) ) sqlite3WithDelete(db, p->pWith);
@@ -159,6 +160,7 @@ Select *sqlite3SelectNew(
   pNew->pWhere = pWhere;
   pNew->pGroupBy = pGroupBy;
   pNew->pHaving = pHaving;
+  pNew->pQualify = 0;
   pNew->pOrderBy = pOrderBy;
   pNew->pPrior = 0;
   pNew->pNext = 0;
@@ -1163,6 +1165,11 @@ static void selectInnerLoop(
 
   assert( v );
   assert( p->pEList!=0 );
+#ifndef SQLITE_OMIT_WINDOWFUNC
+  if( p->pQualify ){
+    sqlite3ExprIfFalse(pParse, p->pQualify, iContinue, SQLITE_JUMPIFNULL);
+  }
+#endif
   hasDistinct = pDistinct ? pDistinct->eTnctType : WHERE_DISTINCT_NOOP;
   if( pSort && pSort->pOrderBy==0 ) pSort = 0;
   if( pSort==0 && !hasDistinct ){
@@ -4052,6 +4059,7 @@ static void substSelect(
     substExprList(pSubst, p->pGroupBy);
     substExprList(pSubst, p->pOrderBy);
     p->pHaving = substExpr(pSubst, p->pHaving);
+    p->pQualify = substExpr(pSubst, p->pQualify);
     p->pWhere = substExpr(pSubst, p->pWhere);
     pSrc = p->pSrc;
     assert( pSrc!=0 );
@@ -4449,7 +4457,7 @@ static int flattenSubquery(
   assert( pSub!=0 );
 
 #ifndef SQLITE_OMIT_WINDOWFUNC
-  if( p->pWin || pSub->pWin ) return 0;                  /* Restriction (25) */
+  if( p->pWin || pSub->pWin || p->pQualify || pSub->pQualify ) return 0; /* Restriction (25) */
 #endif
 
   pSubSrc = pSub->pSrc;
@@ -7259,6 +7267,7 @@ static int countOfViewOptimization(Parse *pParse, Select *p){
   if( p->pEList->nExpr!=1 ) return 0;               /* Single result column */
   if( p->pWhere ) return 0;
   if( p->pHaving ) return 0;
+  if( p->pQualify ) return 0;
   if( p->pGroupBy ) return 0;
   if( p->pOrderBy ) return 0;
   pExpr = p->pEList->a[0].pExpr;

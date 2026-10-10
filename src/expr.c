@@ -830,6 +830,7 @@ static void heightOfSelect(const Select *pSelect, int *pnHeight){
   for(p=pSelect; p; p=p->pPrior){
     heightOfExpr(p->pWhere, pnHeight);
     heightOfExpr(p->pHaving, pnHeight);
+    heightOfExpr(p->pQualify, pnHeight);
     heightOfExpr(p->pLimit, pnHeight);
     heightOfExprList(p->pEList, pnHeight);
     heightOfExprList(p->pGroupBy, pnHeight);
@@ -1963,6 +1964,7 @@ Select *sqlite3SelectDup(sqlite3 *db, const Select *pDup, int flags){
     pNew->pWhere = sqlite3ExprDup(db, p->pWhere, flags);
     pNew->pGroupBy = sqlite3ExprListDup(db, p->pGroupBy, flags);
     pNew->pHaving = sqlite3ExprDup(db, p->pHaving, flags);
+    pNew->pQualify = sqlite3ExprDup(db, p->pQualify, flags);
     pNew->pOrderBy = sqlite3ExprListDup(db, p->pOrderBy, flags);
     pNew->op = p->op;
     pNew->pNext = pNext;
