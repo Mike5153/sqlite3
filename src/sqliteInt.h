@@ -4953,6 +4953,7 @@ ExprList *sqlite3ExprListAppendVector(Parse*,ExprList*,IdList*,Expr*);
 Select *sqlite3ExprListToValues(Parse*, int, ExprList*);
 void sqlite3ExprListSetSortOrder(ExprList*,int,int);
 void sqlite3ExprListSetName(Parse*,ExprList*,const Token*,int);
+void sqlite3ExprListSetQualifiedName(Parse*,ExprList*,const Token*,const Token*);
 void sqlite3ExprListSetSpan(Parse*,ExprList*,const char*,const char*);
 void sqlite3ExprListDelete(sqlite3*, ExprList*);
 void sqlite3ExprListDeleteGeneric(sqlite3*,void*);
@@ -5071,6 +5072,7 @@ int sqlite3SrcItemAttachSubquery(Parse*, SrcItem*, Select*, int);
 SrcList *sqlite3SrcListAppendFromTerm(Parse*, SrcList*, Token*, Token*,
                                       Token*, Select*, OnOrUsing*);
 void sqlite3SrcListIndexedBy(Parse *, SrcList *, Token *);
+void sqlite3SrcListSetTarget(Parse*, SrcList*, const Token*);
 void sqlite3SrcListFuncArgs(Parse*, SrcList*, ExprList*);
 int sqlite3IndexedByLookup(Parse *, SrcItem *);
 void sqlite3SrcListShiftJoinType(Parse*,SrcList*);

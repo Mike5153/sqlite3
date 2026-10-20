@@ -5159,6 +5159,34 @@ SrcList *sqlite3SrcListAppendList(Parse *pParse, SrcList *p1, SrcList *p2){
 }
 
 /*
+** In a multi-table DELETE statement, move the table or alias named pTarget
+** to position 0 in pList so that it becomes the target table to delete from.
+*/
+void sqlite3SrcListSetTarget(Parse *pParse, SrcList *pList, const Token *pTarget){
+  if( pTarget && pTarget->n>0 && pList && pList->nSrc>0 ){
+    char *zTarget = sqlite3DbStrNDup(pParse->db, pTarget->z, pTarget->n);
+    int i;
+    sqlite3Dequote(zTarget);
+    for(i=0; i<pList->nSrc; i++){
+      SrcItem *pItem = &pList->a[i];
+      if( (pItem->zAlias && sqlite3_stricmp(pItem->zAlias, zTarget)==0)
+       || (pItem->zName && sqlite3_stricmp(pItem->zName, zTarget)==0)
+      ){
+        if( i>0 ){
+          SrcItem tmp = pList->a[0];
+          pList->a[0] = pList->a[i];
+          pList->a[i] = tmp;
+        }
+        sqlite3DbFree(pParse->db, zTarget);
+        return;
+      }
+    }
+    sqlite3ErrorMsg(pParse, "no such table or alias in DELETE: %s", zTarget);
+    sqlite3DbFree(pParse->db, zTarget);
+  }
+}
+
+/*
 ** Add the list of function arguments to the SrcList entry for a
 ** table-valued-function.
 */

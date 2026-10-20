@@ -470,6 +470,28 @@ void sqlite3Update(
     if( nChangeFrom==0 && sqlite3ResolveExprNames(&sNC, pChanges->a[i].pExpr) ){
       goto update_cleanup;
     }
+    {
+      const char *zColName = pChanges->a[i].zEName;
+      char *zDot = strchr(zColName, '.');
+      if( zDot ){
+        int nTbl = (int)(zDot - zColName);
+        const char *zAlias = pTabList->a[0].zAlias;
+        const char *zTabName = pTabList->a[0].zName;
+        if( (zAlias && sqlite3StrNICmp(zColName, zAlias, nTbl)==0 && zAlias[nTbl]==0)
+         || (sqlite3StrNICmp(zColName, zTabName, nTbl)==0 && zTabName[nTbl]==0)
+        ){
+          char *zNewName = sqlite3DbStrDup(db, zDot + 1);
+          sqlite3DbFree(db, pChanges->a[i].zEName);
+          pChanges->a[i].zEName = zNewName;
+        }else{
+          sqlite3ErrorMsg(pParse,
+            "cannot update column \"%s\" belonging to another table",
+            zColName
+          );
+          goto update_cleanup;
+        }
+      }
+    }
     j = sqlite3ColumnIndex(pTab, pChanges->a[i].zEName);
     if( j>=0 ){
       if( j==pTab->iPKey ){
