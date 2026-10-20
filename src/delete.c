@@ -279,6 +279,73 @@ Expr *sqlite3LimitWhere(
        /*      && !defined(SQLITE_OMIT_SUBQUERY) */
 
 /*
+** Generate an expression to read column iCol of the first table
+** in a multi-table DELETE statement.
+*/
+static Expr *deleteExprRowColumn(Parse *pParse, int iCol){
+  Expr *pRet = sqlite3PExpr(pParse, TK_ROW, 0, 0);
+  if( pRet ) pRet->iColumn = iCol+1;
+  return pRet;
+}
+
+/*
+** Generate byte-code to populate an ephemeral table with rowids (or PKs)
+** of rows to delete for a multi-table DELETE statement.
+*/
+static void deleteFromSelect(
+  Parse *pParse,
+  int iEph,
+  Index *pPk,
+  SrcList *pTabList,
+  Expr *pWhere,
+  ExprList *pOrderBy,
+  Expr *pLimit
+){
+  sqlite3 *db = pParse->db;
+  SrcList *pSrc;
+  Select *pSelect;
+  ExprList *pList = 0;
+  Expr *pWhere2;
+  ExprList *pOrderBy2 = 0;
+  Expr *pLimit2 = 0;
+  SelectDest dest;
+  int i;
+
+  pSrc = sqlite3SrcListDup(db, pTabList, 0);
+  pWhere2 = sqlite3ExprDup(db, pWhere, 0);
+
+  assert( pTabList->nSrc>1 );
+  if( pSrc ){
+    assert( pSrc->a[0].fg.notCte );
+    pSrc->a[0].iCursor = -1;
+    pSrc->a[0].pSTab->nTabRef--;
+    pSrc->a[0].pSTab = 0;
+  }
+  if( pPk ){
+    for(i=0; i<pPk->nKeyCol; i++){
+      Expr *pNew = deleteExprRowColumn(pParse, pPk->aiColumn[i]);
+      pList = sqlite3ExprListAppend(pParse, pList, pNew);
+    }
+    pList = sqlite3ExprListAppend(pParse, pList, sqlite3Expr(db, TK_INTEGER, "0"));
+  }else{
+    pList = sqlite3ExprListAppend(pParse, 0, sqlite3PExpr(pParse, TK_ROW, 0, 0));
+    pList = sqlite3ExprListAppend(pParse, pList, sqlite3Expr(db, TK_INTEGER, "0"));
+  }
+#ifdef SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+  pOrderBy2 = sqlite3ExprListDup(db, pOrderBy, 0);
+  pLimit2 = sqlite3ExprDup(db, pLimit, 0);
+#endif
+  pSelect = sqlite3SelectNew(pParse, pList,
+      pSrc, pWhere2, 0, 0, pOrderBy2,
+      SF_UFSrcCheck|SF_IncludeHidden|SF_UpdateFrom, pLimit2
+  );
+  sqlite3SelectDestInit(&dest, SRT_Upfrom, iEph);
+  dest.iSDParm2 = (pPk ? pPk->nKeyCol : -1);
+  sqlite3Select(pParse, pSelect, &dest);
+  sqlite3SelectDelete(db, pSelect);
+}
+
+/*
 ** Generate code for a DELETE FROM statement.
 **
 **     DELETE FROM table_wxyz WHERE a<5 AND b NOT NULL;
@@ -335,7 +402,7 @@ void sqlite3DeleteFrom(
     goto delete_from_cleanup;
   }
   assert( db->mallocFailed==0 );
-  assert( pTabList->nSrc==1 );
+  assert( pTabList->nSrc>=1 );
 
   /* Locate the table which we want to delete.  This table has to be
   ** put in an SrcList structure because some of the subroutines we
@@ -400,7 +467,8 @@ void sqlite3DeleteFrom(
 
   /* Assign cursor numbers to the table and all its indices.
   */
-  assert( pTabList->nSrc==1 );
+  assert( pTabList->nSrc>=1 );
+  if( pTabList->nSrc>1 ) bComplex = 1;
   iTabCur = pTabList->a[0].iCursor = pParse->nTab++;
   for(nIdx=0, pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext, nIdx++){
     pParse->nTab++;
@@ -437,11 +505,13 @@ void sqlite3DeleteFrom(
 
   /* Resolve the column names in the WHERE clause.
   */
-  memset(&sNC, 0, sizeof(sNC));
-  sNC.pParse = pParse;
-  sNC.pSrcList = pTabList;
-  if( sqlite3ResolveExprNames(&sNC, pWhere) ){
-    goto delete_from_cleanup;
+  if( pTabList->nSrc==1 ){
+    memset(&sNC, 0, sizeof(sNC));
+    sNC.pParse = pParse;
+    sNC.pSrcList = pTabList;
+    if( sqlite3ResolveExprNames(&sNC, pWhere) ){
+      goto delete_from_cleanup;
+    }
   }
 
   /* Initialize the counter of the number of rows deleted, if
@@ -492,6 +562,80 @@ void sqlite3DeleteFrom(
     }
   }else
 #endif /* SQLITE_OMIT_TRUNCATE_OPTIMIZATION */
+  if( pTabList->nSrc>1 ){
+    int iEphCur = pParse->nTab++;
+    int addrTop;
+    int labelBreak = sqlite3VdbeMakeLabel(pParse);
+    int labelContinue = sqlite3VdbeMakeLabel(pParse);
+
+    pPk = HasRowid(pTab) ? 0 : sqlite3PrimaryKeyIndex(pTab);
+    nPk = pPk ? pPk->nKeyCol : 1;
+    if( pPk ){
+      iPk = pParse->nMem + 1;
+      pParse->nMem += nPk;
+      sqlite3VdbeAddOp2(v, OP_OpenEphemeral, iEphCur, nPk);
+      sqlite3VdbeSetP4KeyInfo(pParse, pPk);
+    }else{
+      iKey = ++pParse->nMem;
+      sqlite3VdbeAddOp2(v, OP_OpenEphemeral, iEphCur, 0);
+    }
+
+    deleteFromSelect(pParse, iEphCur, pPk, pTabList, pWhere, pOrderBy, pLimit);
+
+    sqlite3MultiWrite(pParse);
+    aToOpen = sqlite3DbMallocRawNN(db, nIdx+2);
+    if( aToOpen==0 ) goto delete_from_cleanup;
+    memset(aToOpen, 1, nIdx+1);
+    aToOpen[nIdx+1] = 0;
+    if( !isView ){
+      sqlite3OpenTableAndIndices(pParse, pTab, OP_OpenWrite, OPFLAG_FORDELETE,
+                                 iTabCur, aToOpen, &iDataCur, &iIdxCur);
+    }
+
+    sqlite3VdbeAddOp2(v, OP_Rewind, iEphCur, labelBreak);
+    addrTop = sqlite3VdbeCurrentAddr(v);
+
+    if( !isView ){
+      if( pPk ){
+        for(i=0; i<nPk; i++){
+          sqlite3VdbeAddOp3(v, OP_Column, iEphCur, i, iPk+i);
+        }
+        sqlite3VdbeAddOp4Int(v, OP_NotFound, iDataCur, labelContinue, iPk, nPk);
+        nKey = 0;
+        iKey = ++pParse->nMem;
+        sqlite3VdbeAddOp4(v, OP_MakeRecord, iPk, nPk, iKey,
+                          sqlite3IndexAffinityStr(db, pPk), nPk);
+      }else{
+        sqlite3VdbeAddOp2(v, OP_Rowid, iEphCur, iKey);
+        sqlite3VdbeAddOp3(v, OP_NotExists, iDataCur, labelContinue, iKey);
+        nKey = 1;
+      }
+    }
+
+    if( memCnt ){
+      sqlite3VdbeAddOp2(v, OP_AddImm, memCnt, 1);
+    }
+
+#ifndef SQLITE_OMIT_VIRTUALTABLE
+    if( IsVirtual(pTab) ){
+      const char *pVTab = (const char *)sqlite3GetVTable(db, pTab);
+      sqlite3VtabMakeWritable(pParse, pTab);
+      sqlite3MayAbort(pParse);
+      sqlite3VdbeAddOp4(v, OP_VUpdate, 0, 1, iKey, pVTab, P4_VTAB);
+      sqlite3VdbeChangeP5(v, OE_Abort);
+    }else
+#endif
+    {
+      int count = (pParse->nested==0);
+      sqlite3GenerateRowDelete(pParse, pTab, pTrigger, iDataCur, iIdxCur,
+          iKey, nKey, count, OE_Default, ONEPASS_OFF, -1);
+    }
+
+    sqlite3VdbeResolveLabel(v, labelContinue);
+    sqlite3VdbeAddOp2(v, OP_Next, iEphCur, addrTop);
+    sqlite3VdbeResolveLabel(v, labelBreak);
+    sqlite3VdbeAddOp1(v, OP_Close, iEphCur);
+  }else
   {
     u16 wcf = WHERE_ONEPASS_DESIRED|WHERE_DUPLICATES_OK;
     if( sNC.ncFlags & NC_Subquery ) bComplex = 1;
