@@ -73,3 +73,59 @@ INSERT INTO ret_aux VALUES(1, 100), (2, 200);
 UPDATE ret_test t JOIN ret_aux a ON t.id = a.id SET t.v = a.v RETURNING id, v;
 DELETE t FROM ret_test t JOIN ret_aux a ON t.id = a.id WHERE a.v = 100 RETURNING id;
 SELECT * FROM ret_test;
+
+-- 9. Delete from non-first table (verifying no Cartesian product)
+CREATE TABLE emp_target(id INT PRIMARY KEY, name TEXT, dept_id INT);
+CREATE TABLE dept_target(id INT PRIMARY KEY, name TEXT);
+INSERT INTO emp_target VALUES(1, 'Alice', 10), (2, 'Bob', 20);
+INSERT INTO dept_target VALUES(10, 'Tech'), (20, 'HR'), (30, 'Finance');
+
+DELETE d FROM emp_target e JOIN dept_target d ON e.dept_id = d.id WHERE e.name = 'Alice';
+SELECT * FROM dept_target;
+
+-- 10. Multi-table UPDATE with LEFT JOIN
+CREATE TABLE lj_up1(id INT PRIMARY KEY, val TEXT, ref INT);
+CREATE TABLE lj_up2(id INT PRIMARY KEY, tag TEXT);
+INSERT INTO lj_up1 VALUES(1, 'orig1', 10), (2, 'orig2', 99);
+INSERT INTO lj_up2 VALUES(10, 'matched');
+
+UPDATE lj_up1 l1 LEFT JOIN lj_up2 l2 ON l1.ref = l2.id
+SET l1.val = COALESCE(l2.tag, 'unmatched');
+SELECT * FROM lj_up1;
+
+-- 11. Multi-table DELETE with LEFT JOIN
+CREATE TABLE lj_del1(id INT PRIMARY KEY, val TEXT, ref INT);
+CREATE TABLE lj_del2(id INT PRIMARY KEY, tag TEXT);
+INSERT INTO lj_del1 VALUES(1, 'keep', 10), (2, 'delete_me', 99);
+INSERT INTO lj_del2 VALUES(10, 'matched');
+
+DELETE d1 FROM lj_del1 d1 LEFT JOIN lj_del2 d2 ON d1.ref = d2.id
+WHERE d2.id IS NULL;
+SELECT * FROM lj_del1;
+
+-- 12. Multi-table DELETE on VIEW with INSTEAD OF trigger
+CREATE TABLE actual_items(id INT PRIMARY KEY, name TEXT, cat_id INT);
+CREATE TABLE categories(id INT PRIMARY KEY, name TEXT);
+CREATE TABLE view_del_log(action TEXT);
+INSERT INTO actual_items VALUES(1, 'Book', 10), (2, 'Pen', 20);
+INSERT INTO categories VALUES(10, 'Stationery'), (20, 'Office');
+
+CREATE VIEW v_items AS SELECT id, name, cat_id FROM actual_items;
+CREATE TRIGGER tr_v_items_del INSTEAD OF DELETE ON v_items BEGIN
+  INSERT INTO view_del_log VALUES('deleted ' || OLD.name);
+  DELETE FROM actual_items WHERE id = OLD.id;
+END;
+
+DELETE v FROM v_items v JOIN categories c ON v.cat_id = c.id WHERE c.name = 'Stationery';
+SELECT * FROM view_del_log;
+SELECT * FROM actual_items;
+
+-- 13. ALTER TABLE RENAME with qualified SET tbl.col
+CREATE TABLE ren_t1(a INT, b TEXT);
+CREATE TABLE ren_t2(x INT, y TEXT);
+CREATE TRIGGER tr_ren AFTER INSERT ON ren_t2 BEGIN
+  UPDATE ren_t1 SET ren_t1.b = 'renamed_val' WHERE ren_t1.a = new.x;
+END;
+
+ALTER TABLE ren_t1 RENAME COLUMN b TO b_new;
+SELECT sql FROM sqlite_schema WHERE name = 'tr_ren';

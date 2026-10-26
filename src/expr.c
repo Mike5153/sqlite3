@@ -2237,6 +2237,9 @@ void sqlite3ExprListSetQualifiedName(
     sqlite3Dequote(zTbl);
     sqlite3Dequote(zCol);
     pItem->zEName = sqlite3MPrintf(pParse->db, "%s.%s", zTbl, zCol);
+    if( IN_RENAME_OBJECT ){
+      sqlite3RenameTokenMap(pParse, (const void*)pItem->zEName, pCol);
+    }
     sqlite3DbFree(pParse->db, zTbl);
     sqlite3DbFree(pParse->db, zCol);
   }

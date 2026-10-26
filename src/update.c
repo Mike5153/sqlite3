@@ -472,23 +472,28 @@ void sqlite3Update(
     }
     {
       const char *zColName = pChanges->a[i].zEName;
-      char *zDot = strchr(zColName, '.');
-      if( zDot ){
-        int nTbl = (int)(zDot - zColName);
-        const char *zAlias = pTabList->a[0].zAlias;
-        const char *zTabName = pTabList->a[0].zName;
-        if( (zAlias && sqlite3StrNICmp(zColName, zAlias, nTbl)==0 && zAlias[nTbl]==0)
-         || (sqlite3StrNICmp(zColName, zTabName, nTbl)==0 && zTabName[nTbl]==0)
-        ){
-          char *zNewName = sqlite3DbStrDup(db, zDot + 1);
-          sqlite3DbFree(db, pChanges->a[i].zEName);
-          pChanges->a[i].zEName = zNewName;
-        }else{
-          sqlite3ErrorMsg(pParse,
-            "cannot update column \"%s\" belonging to another table",
-            zColName
-          );
-          goto update_cleanup;
+      if( zColName ){
+        const char *zDot = strchr(zColName, '.');
+        if( zDot ){
+          int nTbl = (int)(zDot - zColName);
+          const char *zAlias = pTabList->a[0].zAlias;
+          const char *zTabName = pTabList->a[0].zName;
+          if( (zAlias && sqlite3StrNICmp(zColName, zAlias, nTbl)==0 && zAlias[nTbl]==0)
+           || (zTabName && sqlite3StrNICmp(zColName, zTabName, nTbl)==0 && zTabName[nTbl]==0)
+          ){
+            char *zNewName = sqlite3DbStrDup(db, zDot + 1);
+            if( IN_RENAME_OBJECT ){
+              sqlite3RenameTokenRemap(pParse, zNewName, pChanges->a[i].zEName);
+            }
+            sqlite3DbFree(db, pChanges->a[i].zEName);
+            pChanges->a[i].zEName = zNewName;
+          }else{
+            sqlite3ErrorMsg(pParse,
+              "cannot update column \"%s\" belonging to another table",
+              zColName
+            );
+            goto update_cleanup;
+          }
         }
       }
     }

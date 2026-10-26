@@ -5159,8 +5159,8 @@ SrcList *sqlite3SrcListAppendList(Parse *pParse, SrcList *p1, SrcList *p2){
 }
 
 /*
-** In a multi-table DELETE statement, move the table or alias named pTarget
-** to position 0 in pList so that it becomes the target table to delete from.
+** In a multi-table DELETE statement, mark the table or alias named pTarget
+** with fg.isTarget=1 so that it becomes the target table to delete from.
 */
 void sqlite3SrcListSetTarget(Parse *pParse, SrcList *pList, const Token *pTarget){
   if( pTarget && pTarget->n>0 && pList && pList->nSrc>0 ){
@@ -5172,11 +5172,7 @@ void sqlite3SrcListSetTarget(Parse *pParse, SrcList *pList, const Token *pTarget
       if( (pItem->zAlias && sqlite3_stricmp(pItem->zAlias, zTarget)==0)
        || (pItem->zName && sqlite3_stricmp(pItem->zName, zTarget)==0)
       ){
-        if( i>0 ){
-          SrcItem tmp = pList->a[0];
-          pList->a[0] = pList->a[i];
-          pList->a[i] = tmp;
-        }
+        pItem->fg.isTarget = 1;
         sqlite3DbFree(pParse->db, zTarget);
         return;
       }

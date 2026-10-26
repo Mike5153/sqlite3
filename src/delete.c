@@ -29,9 +29,18 @@
 **
 */
 Table *sqlite3SrcListLookup(Parse *pParse, SrcList *pSrc){
-  SrcItem *pItem = pSrc->a;
+  int iTarget = 0;
+  int i;
+  SrcItem *pItem;
   Table *pTab;
-  assert( pItem && pSrc->nSrc>=1 );
+  assert( pSrc && pSrc->nSrc>=1 );
+  for(i=0; i<pSrc->nSrc; i++){
+    if( pSrc->a[i].fg.isTarget ){
+      iTarget = i;
+      break;
+    }
+  }
+  pItem = &pSrc->a[iTarget];
   pTab = sqlite3LocateTableItem(pParse, 0, pItem);
   if( pItem->pSTab ) sqlite3DeleteTable(pParse->db, pItem->pSTab);
   pItem->pSTab = pTab;
@@ -279,12 +288,15 @@ Expr *sqlite3LimitWhere(
        /*      && !defined(SQLITE_OMIT_SUBQUERY) */
 
 /*
-** Generate an expression to read column iCol of the first table
+** Generate an expression to read column iCol of table iTarget
 ** in a multi-table DELETE statement.
 */
-static Expr *deleteExprRowColumn(Parse *pParse, int iCol){
+static Expr *deleteExprRowColumn(Parse *pParse, int iTarget, int iCol){
   Expr *pRet = sqlite3PExpr(pParse, TK_ROW, 0, 0);
-  if( pRet ) pRet->iColumn = iCol+1;
+  if( pRet ){
+    pRet->iTable = iTarget;
+    pRet->iColumn = iCol+1;
+  }
   return pRet;
 }
 
@@ -297,6 +309,7 @@ static void deleteFromSelect(
   int iEph,
   Index *pPk,
   SrcList *pTabList,
+  int iTarget,
   Expr *pWhere,
   ExprList *pOrderBy,
   Expr *pLimit
@@ -310,25 +323,37 @@ static void deleteFromSelect(
   Expr *pLimit2 = 0;
   SelectDest dest;
   int i;
+  Table *pTab;
 
   pSrc = sqlite3SrcListDup(db, pTabList, 0);
   pWhere2 = sqlite3ExprDup(db, pWhere, 0);
 
   assert( pTabList->nSrc>1 );
+  assert( iTarget>=0 && iTarget<pTabList->nSrc );
   if( pSrc ){
-    assert( pSrc->a[0].fg.notCte );
-    pSrc->a[0].iCursor = -1;
-    pSrc->a[0].pSTab->nTabRef--;
-    pSrc->a[0].pSTab = 0;
+    assert( pSrc->a[iTarget].fg.notCte );
+    pSrc->a[iTarget].iCursor = -1;
+    if( pSrc->a[iTarget].pSTab ){
+      pSrc->a[iTarget].pSTab->nTabRef--;
+      pSrc->a[iTarget].pSTab = 0;
+    }
   }
+  pTab = pTabList->a[iTarget].pSTab;
   if( pPk ){
     for(i=0; i<pPk->nKeyCol; i++){
-      Expr *pNew = deleteExprRowColumn(pParse, pPk->aiColumn[i]);
+      Expr *pNew = deleteExprRowColumn(pParse, iTarget, pPk->aiColumn[i]);
       pList = sqlite3ExprListAppend(pParse, pList, pNew);
     }
     pList = sqlite3ExprListAppend(pParse, pList, sqlite3Expr(db, TK_INTEGER, "0"));
+  }else if( IsView(pTab) ){
+    for(i=0; i<pTab->nCol; i++){
+      Expr *pNew = deleteExprRowColumn(pParse, iTarget, i);
+      pList = sqlite3ExprListAppend(pParse, pList, pNew);
+    }
   }else{
-    pList = sqlite3ExprListAppend(pParse, 0, sqlite3PExpr(pParse, TK_ROW, 0, 0));
+    Expr *pRow = sqlite3PExpr(pParse, TK_ROW, 0, 0);
+    if( pRow ) pRow->iTable = iTarget;
+    pList = sqlite3ExprListAppend(pParse, 0, pRow);
     pList = sqlite3ExprListAppend(pParse, pList, sqlite3Expr(db, TK_INTEGER, "0"));
   }
 #ifdef SQLITE_ENABLE_UPDATE_DELETE_LIMIT
@@ -339,8 +364,8 @@ static void deleteFromSelect(
       pSrc, pWhere2, 0, 0, pOrderBy2,
       SF_UFSrcCheck|SF_IncludeHidden|SF_UpdateFrom, pLimit2
   );
-  sqlite3SelectDestInit(&dest, SRT_Upfrom, iEph);
-  dest.iSDParm2 = (pPk ? pPk->nKeyCol : -1);
+  sqlite3SelectDestInit(&dest, IsView(pTab) ? SRT_Table : SRT_Upfrom, iEph);
+  dest.iSDParm2 = (pPk ? pPk->nKeyCol : (IsView(pTab) ? 0 : -1));
   sqlite3Select(pParse, pSelect, &dest);
   sqlite3SelectDelete(db, pSelect);
 }
@@ -469,7 +494,16 @@ void sqlite3DeleteFrom(
   */
   assert( pTabList->nSrc>=1 );
   if( pTabList->nSrc>1 ) bComplex = 1;
-  iTabCur = pTabList->a[0].iCursor = pParse->nTab++;
+  {
+    int iTarget = 0;
+    for(i=0; i<pTabList->nSrc; i++){
+      if( pTabList->a[i].fg.isTarget ){
+        iTarget = i;
+        break;
+      }
+    }
+    iTabCur = pTabList->a[iTarget].iCursor = pParse->nTab++;
+  }
   for(nIdx=0, pIdx=pTab->pIndex; pIdx; pIdx=pIdx->pNext, nIdx++){
     pParse->nTab++;
   }
@@ -493,7 +527,7 @@ void sqlite3DeleteFrom(
   ** an ephemeral table.
   */
 #if !defined(SQLITE_OMIT_VIEW) && !defined(SQLITE_OMIT_TRIGGER)
-  if( isView ){
+  if( isView && pTabList->nSrc==1 ){
     sqlite3MaterializeView(pParse, pTab,
         pWhere, pOrderBy, pLimit, iTabCur
     );
@@ -567,20 +601,30 @@ void sqlite3DeleteFrom(
     int addrTop;
     int labelBreak = sqlite3VdbeMakeLabel(pParse);
     int labelContinue = sqlite3VdbeMakeLabel(pParse);
+    int iTarget = 0;
+    for(i=0; i<pTabList->nSrc; i++){
+      if( pTabList->a[i].fg.isTarget ){
+        iTarget = i;
+        break;
+      }
+    }
 
-    pPk = HasRowid(pTab) ? 0 : sqlite3PrimaryKeyIndex(pTab);
+    pPk = (HasRowid(pTab) && !isView) ? 0 : sqlite3PrimaryKeyIndex(pTab);
     nPk = pPk ? pPk->nKeyCol : 1;
     if( pPk ){
       iPk = pParse->nMem + 1;
       pParse->nMem += nPk;
       sqlite3VdbeAddOp2(v, OP_OpenEphemeral, iEphCur, nPk);
       sqlite3VdbeSetP4KeyInfo(pParse, pPk);
+    }else if( isView ){
+      sqlite3VdbeAddOp2(v, OP_OpenEphemeral, iEphCur, pTab->nCol);
     }else{
       iKey = ++pParse->nMem;
       sqlite3VdbeAddOp2(v, OP_OpenEphemeral, iEphCur, 0);
     }
 
-    deleteFromSelect(pParse, iEphCur, pPk, pTabList, pWhere, pOrderBy, pLimit);
+    deleteFromSelect(pParse, iEphCur, pPk, pTabList, iTarget, pWhere, pOrderBy, pLimit);
+    if( pParse->nErr ) goto delete_from_cleanup;
 
     sqlite3MultiWrite(pParse);
     aToOpen = sqlite3DbMallocRawNN(db, nIdx+2);
@@ -590,6 +634,8 @@ void sqlite3DeleteFrom(
     if( !isView ){
       sqlite3OpenTableAndIndices(pParse, pTab, OP_OpenWrite, OPFLAG_FORDELETE,
                                  iTabCur, aToOpen, &iDataCur, &iIdxCur);
+    }else{
+      iDataCur = iEphCur;
     }
 
     sqlite3VdbeAddOp2(v, OP_Rewind, iEphCur, labelBreak);
@@ -610,6 +656,10 @@ void sqlite3DeleteFrom(
         sqlite3VdbeAddOp3(v, OP_NotExists, iDataCur, labelContinue, iKey);
         nKey = 1;
       }
+    }else{
+      iKey = ++pParse->nMem;
+      sqlite3VdbeAddOp2(v, OP_Rowid, iEphCur, iKey);
+      nKey = 1;
     }
 
     if( memCnt ){

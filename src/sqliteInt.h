@@ -3374,6 +3374,7 @@ struct SrcItem {
     unsigned hadSchema :1;     /* Had u4.zDatabase before u4.pSchema */
     unsigned fromExists :1;    /* Comes from WHERE EXISTS(...) */
     unsigned isDt :1;          /* True if DT keyword precedes table name */
+    unsigned isTarget :1;      /* True if target table of multi-table DELETE */
   } fg;
   int iCursor;      /* The VDBE cursor number used to access this table */
   Bitmask colUsed;  /* Bit N set if column N used. Details above for N>62 */
