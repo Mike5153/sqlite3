@@ -961,10 +961,34 @@ limit_opt(A) ::= LIMIT expr(X) COMMA expr(Y).
 
 /////////////////////////// The DELETE statement /////////////////////////////
 //
+%type using_opt {SrcList*}
+%destructor using_opt {sqlite3SrcListDelete(pParse->db, $$);}
+using_opt(A) ::= .                    {A = 0;}
+using_opt(A) ::= USING seltablist(X). {
+  A = X;
+  sqlite3SrcListShiftJoinType(pParse, A);
+}
+
 %if SQLITE_ENABLE_UPDATE_DELETE_LIMIT || SQLITE_UDL_CAPABLE_PARSER
-cmd ::= with DELETE FROM xfullname(X) indexed_opt(I) where_opt_ret(W)
+cmd ::= with DELETE FROM xfullname(X) indexed_opt(I) using_opt(U) where_opt_ret(W)
         orderby_opt(O) limit_opt(L). {
   sqlite3SrcListIndexedBy(pParse, X, &I);
+  if( U ){
+    X = sqlite3SrcListAppendList(pParse, X, U);
+  }
+#ifndef SQLITE_ENABLE_UPDATE_DELETE_LIMIT
+  if( O || L ){
+    updateDeleteLimitError(pParse,O,L);
+    O = 0;
+    L = 0;
+  }
+#endif
+  sqlite3DeleteFrom(pParse,X,W,O,L);
+}
+cmd ::= with DELETE nm(T) FROM seltablist(X) where_opt_ret(W)
+        orderby_opt(O) limit_opt(L). {
+  sqlite3SrcListSetTarget(pParse, X, &T);
+  sqlite3SrcListShiftJoinType(pParse, X);
 #ifndef SQLITE_ENABLE_UPDATE_DELETE_LIMIT
   if( O || L ){
     updateDeleteLimitError(pParse,O,L);
@@ -975,8 +999,16 @@ cmd ::= with DELETE FROM xfullname(X) indexed_opt(I) where_opt_ret(W)
   sqlite3DeleteFrom(pParse,X,W,O,L);
 }
 %else
-cmd ::= with DELETE FROM xfullname(X) indexed_opt(I) where_opt_ret(W). {
+cmd ::= with DELETE FROM xfullname(X) indexed_opt(I) using_opt(U) where_opt_ret(W). {
   sqlite3SrcListIndexedBy(pParse, X, &I);
+  if( U ){
+    X = sqlite3SrcListAppendList(pParse, X, U);
+  }
+  sqlite3DeleteFrom(pParse,X,W,0,0);
+}
+cmd ::= with DELETE nm(T) FROM seltablist(X) where_opt_ret(W). {
+  sqlite3SrcListSetTarget(pParse, X, &T);
+  sqlite3SrcListShiftJoinType(pParse, X);
   sqlite3DeleteFrom(pParse,X,W,0,0);
 }
 %endif
@@ -998,9 +1030,9 @@ where_opt_ret(A) ::= WHERE expr(X) RETURNING selcollist(Y).
 ////////////////////////// The UPDATE command ////////////////////////////////
 //
 %if SQLITE_ENABLE_UPDATE_DELETE_LIMIT || SQLITE_UDL_CAPABLE_PARSER
-cmd ::= with UPDATE orconf(R) xfullname(X) indexed_opt(I) SET setlist(Y) from(F)
+cmd ::= with UPDATE orconf(R) seltablist(X) SET setlist(Y) from(F)
         where_opt_ret(W) orderby_opt(O) limit_opt(L).  {
-  sqlite3SrcListIndexedBy(pParse, X, &I);
+  sqlite3SrcListShiftJoinType(pParse, X);
   if( F ){
     SrcList *pFromClause = F;
     if( pFromClause->nSrc>1 ){
@@ -1024,9 +1056,9 @@ cmd ::= with UPDATE orconf(R) xfullname(X) indexed_opt(I) SET setlist(Y) from(F)
   sqlite3Update(pParse,X,Y,W,R,O,L,0);
 }
 %else
-cmd ::= with UPDATE orconf(R) xfullname(X) indexed_opt(I) SET setlist(Y) from(F)
+cmd ::= with UPDATE orconf(R) seltablist(X) SET setlist(Y) from(F)
         where_opt_ret(W). {
-  sqlite3SrcListIndexedBy(pParse, X, &I);
+  sqlite3SrcListShiftJoinType(pParse, X);
   sqlite3ExprListCheckLength(pParse,Y,"set list"); 
   if( F ){
     SrcList *pFromClause = F;
@@ -1053,12 +1085,20 @@ setlist(A) ::= setlist(A) COMMA nm(X) EQ expr(Y). {
   A = sqlite3ExprListAppend(pParse, A, Y);
   sqlite3ExprListSetName(pParse, A, &X, 1);
 }
+setlist(A) ::= setlist(A) COMMA nm(T) DOT nm(X) EQ expr(Y). {
+  A = sqlite3ExprListAppend(pParse, A, Y);
+  sqlite3ExprListSetQualifiedName(pParse, A, &T, &X);
+}
 setlist(A) ::= setlist(A) COMMA LP idlist(X) RP EQ expr(Y). {
   A = sqlite3ExprListAppendVector(pParse, A, X, Y);
 }
 setlist(A) ::= nm(X) EQ expr(Y). {
   A = sqlite3ExprListAppend(pParse, 0, Y);
   sqlite3ExprListSetName(pParse, A, &X, 1);
+}
+setlist(A) ::= nm(T) DOT nm(X) EQ expr(Y). {
+  A = sqlite3ExprListAppend(pParse, 0, Y);
+  sqlite3ExprListSetQualifiedName(pParse, A, &T, &X);
 }
 setlist(A) ::= LP idlist(X) RP EQ expr(Y). {
   A = sqlite3ExprListAppendVector(pParse, 0, X, Y);

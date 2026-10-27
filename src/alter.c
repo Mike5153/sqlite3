@@ -1093,7 +1093,7 @@ static void renameColumnElistNames(
       const char *zName = pEList->a[i].zEName;
       if( ALWAYS(pEList->a[i].fg.eEName==ENAME_NAME)
        && ALWAYS(zName!=0)
-       && 0==sqlite3_stricmp(zName, zOld)
+       && 0==sqlite3_stricmp(strchr(zName, '.') ? strchr(zName, '.')+1 : zName, zOld)
       ){
         renameTokenFind(pParse, pCtx, (const void*)zName);
       }

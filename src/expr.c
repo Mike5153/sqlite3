@@ -2214,6 +2214,38 @@ void sqlite3ExprListSetName(
 }
 
 /*
+** Set the ExprList.a[].zEName element of the most recently added item
+** on the expression list to a qualified name "table.column".
+*/
+void sqlite3ExprListSetQualifiedName(
+  Parse *pParse,          /* Parsing context */
+  ExprList *pList,        /* List to which to add the name */
+  const Token *pTable,    /* Table or table-alias name */
+  const Token *pCol       /* Column name */
+){
+  assert( pList!=0 || pParse->db->mallocFailed!=0 );
+  if( pList ){
+    struct ExprList_item *pItem;
+    char *zTbl;
+    char *zCol;
+    assert( pList->nExpr>0 );
+    pItem = &pList->a[pList->nExpr-1];
+    assert( pItem->zEName==0 );
+    assert( pItem->fg.eEName==ENAME_NAME );
+    zTbl = sqlite3DbStrNDup(pParse->db, pTable->z, pTable->n);
+    zCol = sqlite3DbStrNDup(pParse->db, pCol->z, pCol->n);
+    sqlite3Dequote(zTbl);
+    sqlite3Dequote(zCol);
+    pItem->zEName = sqlite3MPrintf(pParse->db, "%s.%s", zTbl, zCol);
+    if( IN_RENAME_OBJECT ){
+      sqlite3RenameTokenMap(pParse, (const void*)pItem->zEName, pCol);
+    }
+    sqlite3DbFree(pParse->db, zTbl);
+    sqlite3DbFree(pParse->db, zCol);
+  }
+}
+
+/*
 ** Set the ExprList.a[].zSpan element of the most recently added item
 ** on the expression list.
 **

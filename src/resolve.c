@@ -985,7 +985,8 @@ static int resolveExprStep(Walker *pWalker, Expr *pExpr){
       SrcList *pSrcList = pNC->pSrcList;
       SrcItem *pItem;
       assert( pSrcList && pSrcList->nSrc>=1 );
-      pItem = pSrcList->a;
+      assert( pExpr->iTable>=0 && pExpr->iTable<pSrcList->nSrc );
+      pItem = &pSrcList->a[pExpr->iTable];
       pExpr->op = TK_COLUMN;
       assert( ExprUseYTab(pExpr) );
       pExpr->y.pTab = pItem->pSTab;

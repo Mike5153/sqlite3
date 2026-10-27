@@ -3374,6 +3374,7 @@ struct SrcItem {
     unsigned hadSchema :1;     /* Had u4.zDatabase before u4.pSchema */
     unsigned fromExists :1;    /* Comes from WHERE EXISTS(...) */
     unsigned isDt :1;          /* True if DT keyword precedes table name */
+    unsigned isTarget :1;      /* True if target table of multi-table DELETE */
   } fg;
   int iCursor;      /* The VDBE cursor number used to access this table */
   Bitmask colUsed;  /* Bit N set if column N used. Details above for N>62 */
@@ -4953,6 +4954,7 @@ ExprList *sqlite3ExprListAppendVector(Parse*,ExprList*,IdList*,Expr*);
 Select *sqlite3ExprListToValues(Parse*, int, ExprList*);
 void sqlite3ExprListSetSortOrder(ExprList*,int,int);
 void sqlite3ExprListSetName(Parse*,ExprList*,const Token*,int);
+void sqlite3ExprListSetQualifiedName(Parse*,ExprList*,const Token*,const Token*);
 void sqlite3ExprListSetSpan(Parse*,ExprList*,const char*,const char*);
 void sqlite3ExprListDelete(sqlite3*, ExprList*);
 void sqlite3ExprListDeleteGeneric(sqlite3*,void*);
@@ -5071,6 +5073,7 @@ int sqlite3SrcItemAttachSubquery(Parse*, SrcItem*, Select*, int);
 SrcList *sqlite3SrcListAppendFromTerm(Parse*, SrcList*, Token*, Token*,
                                       Token*, Select*, OnOrUsing*);
 void sqlite3SrcListIndexedBy(Parse *, SrcList *, Token *);
+void sqlite3SrcListSetTarget(Parse*, SrcList*, const Token*);
 void sqlite3SrcListFuncArgs(Parse*, SrcList*, ExprList*);
 int sqlite3IndexedByLookup(Parse *, SrcItem *);
 void sqlite3SrcListShiftJoinType(Parse*,SrcList*);
